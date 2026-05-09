@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user physical attributes for calculation precision and basic profile info.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "height": { "type": "number", "description": "Height in cm" },
+        "weight": { "type": "number", "description": "Weight in kg" },
+        "age": { "type": "number" },
+        "gender": { "type": "string", "enum": ["male", "female", "other"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid"]
+    },
+    "Report": {
+      "title": "Military Report",
+      "description": "A message/report sent by a soldier to Švejk.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "text": { "type": "string" },
+        "image": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "shvejk_comment": { "type": "string" },
+        "alcohol_est": { "type": "number" },
+        "calories_est": { "type": "number" },
+        "location_fact": { "type": "string" }
+      },
+      "required": ["userId", "timestamp", "shvejk_comment"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles restricted to owners."
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Military reports visible only to the creator (and potentially global feed if requested, but for now private)."
+    }
+  }
+}

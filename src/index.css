@@ -1,0 +1,98 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Inter:wght@100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Patrick+Hand&display=swap');
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+@theme {
+  --font-serif: "Playfair Display", serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-chalk: "Patrick Hand", cursive;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    touch-action: manipulation;
+    overflow: hidden;
+    height: -webkit-fill-available;
+  }
+
+  body {
+    @apply bg-[#1a2f4c] text-[#1a2f4c] selection:bg-[#b8974a];
+    font-family: var(--font-sans);
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    height: 100vh;
+    height: -webkit-fill-available;
+    position: fixed; /* Prevents bounce scroll on iOS */
+    width: 100%;
+  }
+
+  #root {
+    height: 100%;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    display: flex;
+    flex-direction: column;
+  }
+
+  input, textarea, select {
+    font-size: 16px !important; /* Prevents auto-zoom on iOS */
+    user-select: text;
+  }
+
+  /* Allow text selection in the log/messages */
+  .font-serif, .shvejk-card p {
+    user-select: text;
+  }
+}
+
+.shvejk-border {
+  @apply border-2 border-[#1a2f4c];
+}
+
+.shvejk-thick-border {
+  @apply border-4 border-[#1a2f4c];
+}
+
+.shvejk-shadow {
+  @apply shadow-[8px_8px_0px_#1a2f4c];
+}
+
+.shvejk-small-shadow {
+  @apply shadow-[4px_4px_0px_#1a2f4c];
+}
+
+.shvejk-card {
+  @apply bg-[#fdfaf1] border-2 border-[#1a2f4c] p-6 shadow-[8px_8px_0px_#1a2f4c] transition-all duration-300;
+}
+
+.shvejk-card-dark {
+  @apply bg-[#1a2f4c] text-[#f4ebd0] p-6 shadow-[8px_8px_0px_#b8974a];
+}
+
+.shvejk-button {
+  @apply bg-[#f4ebd0] border-2 border-[#1a2f4c] px-6 py-2 font-bold transition-all hover:bg-white active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-50;
+}
+
+.shvejk-input {
+  @apply bg-[#d9c2a3] border-2 border-[#1a2f4c] outline-none px-4 py-2 text-lg transition-all focus:bg-white;
+}
+
+/* Custom scrollbar for that parchment feel */
+::-webkit-scrollbar {
+  width: 12px;
+}
+::-webkit-scrollbar-track {
+  background: #f4ebd0;
+  border-left: 2px solid #1a2f4c;
+}
+::-webkit-scrollbar-thumb {
+  background: #1a2f4c;
+  border: 2px solid #b8974a;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2c4266;
+}

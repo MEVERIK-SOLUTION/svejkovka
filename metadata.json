@@ -1,0 +1,14 @@
+{
+  "name": "Švejkův Maršál",
+  "description": "Věrný digitální pobočník na pochodu Švejkova 50. Analyzuje proviant i krajinu v nezaměnitelném stylu rakousko-uherské armády.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "Image Analysis",
+    "Persona-based AI Chat",
+    "Fitness & Alcohol Tracking"
+  ]
+}
