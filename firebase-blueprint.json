@@ -1,47 +1,78 @@
 {
   "entities": {
+    "Message": {
+      "title": "Message",
+      "description": "A field report or response in the military diary.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the soldier." },
+        "text": { "type": "string", "description": "The content of the report." },
+        "sender": { "type": "string", "enum": ["user", "ai"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "imageUrl": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "response": {
+          "type": "object",
+          "properties": {
+            "shvejk_comment": { "type": "string" },
+            "military_order": { "type": "string" },
+            "estimated_calories": { "type": "number" },
+            "estimated_alcohol_promille": { "type": "number" }
+          }
+        }
+      },
+      "required": ["userId", "text", "sender", "timestamp"]
+    },
+    "UserStats": {
+      "title": "UserStats",
+      "description": "Aggregated military performance stats.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPhoto": { "type": "string" },
+        "totalCalories": { "type": "number" },
+        "currentAlcohol": { "type": "number" },
+        "lastUpdate": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "totalCalories", "currentAlcohol"]
+    },
     "User": {
-      "title": "User Profile",
-      "description": "Stores user physical attributes for calculation precision and basic profile info.",
+      "title": "User",
+      "description": "Soldier personal profile and contact info.",
       "type": "object",
       "properties": {
         "uid": { "type": "string" },
         "displayName": { "type": "string" },
         "email": { "type": "string" },
         "photoURL": { "type": "string" },
-        "height": { "type": "number", "description": "Height in cm" },
-        "weight": { "type": "number", "description": "Weight in kg" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "height": { "type": "number" },
+        "weight": { "type": "number" },
         "age": { "type": "number" },
-        "gender": { "type": "string", "enum": ["male", "female", "other"] },
-        "updatedAt": { "type": "string", "format": "date-time" }
+        "gender": { "type": "string", "enum": ["male", "female", "other"] }
       },
-      "required": ["uid"]
-    },
-    "Report": {
-      "title": "Military Report",
-      "description": "A message/report sent by a soldier to Švejk.",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "text": { "type": "string" },
-        "image": { "type": "string" },
-        "timestamp": { "type": "string", "format": "date-time" },
-        "shvejk_comment": { "type": "string" },
-        "alcohol_est": { "type": "number" },
-        "calories_est": { "type": "number" },
-        "location_fact": { "type": "string" }
-      },
-      "required": ["userId", "timestamp", "shvejk_comment"]
+      "required": ["uid", "displayName", "email", "photoURL", "updatedAt"]
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": "User",
-      "description": "User profiles restricted to owners."
+    "messages": {
+      "schema": "Message",
+      "description": "Collection of all field reports and Shvejk's wisdom."
     },
-    "/reports/{reportId}": {
-      "schema": "Report",
-      "description": "Military reports visible only to the creator (and potentially global feed if requested, but for now private)."
+    "stats": {
+      "schema": "UserStats",
+      "description": "Soldier performance tracking."
+    },
+    "users": {
+      "schema": "User",
+      "description": "Personal profiles of all mašírující soldiers."
     }
   }
 }

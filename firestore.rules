@@ -27,41 +27,54 @@ service cloud.firestore {
       return resource.data;
     }
 
-    // --- User Rules ---
-    match /users/{userId} {
-      function isValidUser(data) {
-        return data.uid == request.auth.uid 
-          && (data.get('height', 0) is number || data.height == null)
-          && (data.get('weight', 0) is number || data.weight == null)
-          && (data.get('age', 0) is number || data.age == null)
-          && (data.get('gender', '') in ['male', 'female', 'other', ''] || data.gender == null)
-          && data.keys().hasAll(['uid'])
-          && data.keys().size() <= 10;
+    // --- Message Rules ---
+    match /messages/{messageId} {
+      function isValidMessage(data) {
+        return data.userId == request.auth.uid
+          && data.text is string && data.text.size() <= 5000
+          && data.sender in ['user', 'ai']
+          && data.timestamp == request.time
+          && data.keys().hasAll(['userId', 'text', 'sender', 'timestamp']);
       }
 
-      allow get: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidUser(incoming()) && incoming().updatedAt == request.time;
-      allow update: if isOwner(userId) && isValidUser(incoming()) 
-        && incoming().uid == existing().uid
-        && incoming().updatedAt == request.time;
+      allow list: if isSignedIn(); // Soldiers can read the shared field report
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidMessage(incoming());
+      allow update, delete: if false;
     }
 
-    // --- Report Rules ---
-    match /reports/{reportId} {
-      function isValidReport(data) {
+    // --- Stats Rules ---
+    match /stats/{userId} {
+      function isValidStats(data) {
         return data.userId == request.auth.uid
-          && data.shvejk_comment is string && data.shvejk_comment.size() <= 2000
-          && (data.get('alcohol_est', 0) is number)
-          && (data.get('calories_est', 0) is number)
-          && data.timestamp == request.time
-          && data.keys().hasAll(['userId', 'timestamp', 'shvejk_comment']);
+          && data.totalCalories is number
+          && data.currentAlcohol is number
+          && (data.userName == null || (data.userName is string && data.userName.size() <= 100))
+          && (data.userPhoto == null || (data.userPhoto is string && data.userPhoto.size() <= 1000))
+          && data.keys().hasAll(['userId', 'totalCalories', 'currentAlcohol']);
       }
 
-      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && isValidReport(incoming());
-      // Reports are typically immutable in this app's logic
-      allow update, delete: if false;
+      allow list: if isSignedIn(); // Allow leaderboard lookup
+      allow get: if isSignedIn(); // Allow seeing other soldiers' basic stats
+      allow create, update: if isOwner(userId) && isValidStats(incoming());
+    }
+
+    // --- User Profile Rules ---
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.uid == request.auth.uid
+          && data.email == request.auth.token.email
+          && data.displayName is string && data.displayName.size() <= 100
+          && data.photoURL is string && data.photoURL.size() <= 1000
+          && (data.height == null || data.height is number)
+          && (data.weight == null || data.weight is number)
+          && (data.age == null || data.age is number)
+          && (data.gender == null || data.gender in ['male', 'female', 'other'])
+          && data.keys().hasAll(['uid', 'email', 'displayName', 'photoURL']);
+      }
+
+      allow get: if isSignedIn(); // Soldiers can see each others' profiles
+      allow create, update: if isOwner(userId) && isValidUser(incoming());
     }
   }
 }

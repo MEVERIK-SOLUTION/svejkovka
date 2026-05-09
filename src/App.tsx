@@ -5,18 +5,20 @@
 
 import React, { useState, useRef, useEffect, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Beer, Flame, MapPin, Camera, Mic, Send, Smile, History, Image as ImageIcon, X, History as HistoryIcon, Share2, Check, Footprints, Trophy, User, Volume2, VolumeX, LogIn, LogOut, Settings } from 'lucide-react';
+import { Beer, Flame, MapPin, Camera, Mic, Send, Smile, History, Image as ImageIcon, X, History as HistoryIcon, Share2, Check, Footprints, Trophy, User, Volume2, VolumeX, LogIn, LogOut, Settings, ScrollText } from 'lucide-react';
 import { getShvejkAnalysis, ShvejkResponse } from './services/geminiService';
 import { playSound, stopSound, setMuted, getMuted } from './lib/sounds';
 import MilitaryMap from './components/MilitaryMap';
 import ProfileModal from './components/ProfileModal';
+import NatureAnalysis from './components/NatureAnalysis';
+import WeatherWidget from './components/WeatherWidget';
 
 // Firebase
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './lib/firebase';
 import { signInWithPopup, signOut } from 'firebase/auth';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { useDocumentData, useCollectionData } from 'react-firebase-hooks/firestore';
-import { doc, setDoc, collection, query, where, orderBy, serverTimestamp, addDoc } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, orderBy, serverTimestamp, addDoc, limit } from 'firebase/firestore';
 
 interface Message {
   id: string;
@@ -50,7 +52,11 @@ export default function App() {
   const profile = userProfileData as UserProfile | undefined;
 
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
-  const [dbMessages] = useCollectionData(user ? query(collection(db, 'reports'), where('userId', '==', user.uid), orderBy('timestamp', 'asc')) : null);
+  // Use 'messages' instead of 'reports', and fetch ALL messages (collaborative)
+  const [dbMessages] = useCollectionData(query(collection(db, 'messages'), orderBy('timestamp', 'desc'), limit(50)));
+  
+  // Use global stats for leaderboard
+  const [globalStats] = useCollectionData(query(collection(db, 'stats'), orderBy('currentAlcohol', 'desc'), limit(10)));
   
   const [inputText, setInputText] = useState('');
   const [stats, setStats] = useState<Stats>({ alcohol: 0, calories: 0, mood: 'Vynikající' });
@@ -67,8 +73,8 @@ export default function App() {
     ...m, 
     id: m.id || Math.random().toString(), 
     timestamp: m.timestamp?.toDate() || new Date(),
-    sender: m.sender || 'shvejk' // Mapping db format if needed
-  })) || []), ...localMessages] as Message[];
+    sender: m.sender || 'shvejk' 
+  })) || []).reverse(), ...localMessages] as Message[];
 
   // Stats calculation based on messages
   useEffect(() => {
@@ -120,10 +126,17 @@ export default function App() {
   };
   
   const [isRecording, setIsRecording] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  
+  const [isNoteOpen, setIsNoteOpen] = useState(false);
+  
+  const [isCameraActive, setIsCameraActive] = useState(false);
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   const handleShare = async (msg: Message) => {
     playSound('CLICK');
@@ -151,38 +164,109 @@ export default function App() {
     if (typeof window !== 'undefined' && ('WebkitSpeechRecognition' in window || 'speechRecognition' in window)) {
       const SpeechRecognition = (window as any).WebkitSpeechRecognition || (window as any).speechRecognition;
       recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
       recognitionRef.current.lang = 'cs-CZ';
 
       recognitionRef.current.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        setInputText(transcript);
-        setIsRecording(false);
-        stopSound('RECORDING');
-        handleSend(transcript);
+        let finalTranscript = '';
+        let currentInterim = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            currentInterim += event.results[i][0].transcript;
+          }
+        }
+
+        if (finalTranscript) {
+          setInputText(prev => prev + (prev.endsWith(' ') || prev === '' ? '' : ' ') + finalTranscript);
+        }
+        setInterimTranscript(currentInterim);
       };
 
-      recognitionRef.current.onerror = () => {
+      recognitionRef.current.onerror = (event: any) => {
+        console.error('Speech recognition error', event.error);
         setIsRecording(false);
         stopSound('RECORDING');
       };
 
       recognitionRef.current.onend = () => {
-        setIsRecording(false);
-        stopSound('RECORDING');
+        // Only stop if we're supposed to be stopped
+        if (isRecording) {
+            try { recognitionRef.current?.start(); } catch(e) {}
+        }
       };
     }
-  }, []);
+  }, [isRecording]);
 
   const toggleRecording = () => {
     playSound('CLICK');
     if (isRecording) {
+      setIsRecording(false);
       recognitionRef.current?.stop();
       stopSound('RECORDING');
+      setInterimTranscript('');
+      
+      // If we have text, send it
+      if (inputText.trim()) {
+        handleSend(inputText);
+      }
     } else {
       setIsRecording(true);
-      recognitionRef.current?.start();
-      playSound('RECORDING', true);
+      setInputText('');
+      setInterimTranscript('');
+      try {
+        recognitionRef.current?.start();
+        playSound('RECORDING', true);
+      } catch (e) {
+        console.error("Failed to start recognition", e);
+        setIsRecording(false);
+      }
+    }
+  };
+
+  const startCamera = async () => {
+    playSound('CLICK');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment' }, 
+        audio: false 
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setIsCameraActive(true);
+    } catch (err) {
+      console.error("Error accessing camera:", err);
+      // Fallback to file input if camera fails
+      fileInputRef.current?.click();
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setIsCameraActive(false);
+  };
+
+  const takePhoto = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0);
+        // Compress slightly for Firestore/Gemini
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+        stopCamera();
+        handleSend("Poslušně hlásím, posílám snímek z fronty!", dataUrl);
+      }
     }
   };
 
@@ -226,22 +310,37 @@ export default function App() {
 
       if (user) {
         // Save to Firestore
-        const reportsColl = collection(db, 'reports');
+        const reportsColl = collection(db, 'messages');
         try {
           await addDoc(reportsColl, {
             userId: user.uid,
+            userName: user.displayName || 'Vojín',
+            userPhoto: user.photoURL,
             text: text || "",
             image: image || null,
             timestamp: serverTimestamp(),
+            sender: 'user', 
             shvejk_comment: response.shvejk_comment,
             alcohol_est: response.alcohol_est,
             calories_est: response.calories_est,
             location_fact: response.location_fact
           });
+
+          // Update user stats
+          const userStatsDoc = doc(db, 'stats', user.uid);
+          await setDoc(userStatsDoc, {
+            userId: user.uid,
+            userName: user.displayName || 'Vojín',
+            userPhoto: user.photoURL,
+            totalCalories: (stats.calories + (response.calories_est || 0)),
+            currentAlcohol: Number((stats.alcohol + (response.alcohol_est || 0)).toFixed(2)),
+            lastUpdate: serverTimestamp()
+          }, { merge: true });
+
         } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, 'reports');
+          handleFirestoreError(err, OperationType.WRITE, 'messages');
         }
-        // Remove from local so it doesn't double show (dbMessages will pick it up)
+        // Remove from local so it doesn't double show
         setLocalMessages(prev => prev.filter(m => m.id !== newMessage.id));
       } else {
         setLocalMessages(prev => [...prev, shvejkMsg]);
@@ -284,29 +383,37 @@ export default function App() {
     }
   };
 
+  // Unit statistics (Aggregate)
+  const totalUnitCalories = globalStats?.reduce((acc, s) => acc + (s.totalCalories || 0), 0) || 0;
+  const avgUnitAlcohol = globalStats?.length 
+    ? (globalStats.reduce((acc, s) => acc + (s.currentAlcohol || 0), 0) / globalStats.length).toFixed(2) 
+    : 0;
+
   return (
-    <div className="min-h-[100dvh] flex flex-col max-w-4xl mx-auto border-4 sm:border-[16px] border-[#1a2f4c] bg-[#f4ebd0] text-[#1a2f4c] shadow-2xl overflow-hidden font-sans">
+    <div className="min-h-screen h-[100dvh] flex flex-col max-w-4xl mx-auto border-4 sm:border-[16px] border-[#1a2f4c] bg-[#f4ebd0] text-[#1a2f4c] shadow-2xl font-sans relative overflow-hidden">
       {/* Sticky Header */}
-      <header className="sticky top-0 z-30 p-3 sm:p-4 border-b-2 sm:border-b-4 border-[#1a2f4c] flex justify-between items-center bg-[#f4ebd0] shadow-md">
+      <header className="flex-none z-30 p-2 sm:p-4 border-b-2 sm:border-b-4 border-[#1a2f4c] flex justify-between items-center bg-[#f4ebd0] shadow-md">
         <div className="flex items-center gap-2 sm:gap-4">
-          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-[#1a2f4c] bg-[#b8974a] flex items-center justify-center text-white font-black shadow-inner overflow-hidden shrink-0">
-             <span className="text-lg sm:text-xl">🎖️</span>
+          <div className="w-8 h-8 sm:w-12 sm:h-12 rounded-full border-2 border-[#1a2f4c] bg-[#b8974a] flex items-center justify-center text-white font-black shadow-inner overflow-hidden shrink-0">
+             <span className="text-base sm:text-xl">🎖️</span>
           </div>
           <div className="flex flex-col">
-            <h1 className="text-lg sm:text-2xl font-black tracking-tighter leading-none uppercase font-serif">C. a k. polní deník</h1>
-            <p className="text-[8px] sm:text-[10px] italic uppercase tracking-widest opacity-80 text-[#b8974a] font-bold">Švejkův Maršál v.1.2</p>
+            <h1 className="text-sm sm:text-2xl font-black tracking-tighter leading-none uppercase font-serif">C. a k. polní deník</h1>
+            <p className="text-[7px] sm:text-[10px] italic uppercase tracking-widest opacity-80 text-[#b8974a] font-bold">
+              Síla sboru: {globalStats?.length || 0} mužů • Švejkův Maršál v.1.2
+            </p>
           </div>
         </div>
-        <div className="text-right flex items-center gap-2 sm:gap-4">
+        <div className="text-right flex items-center gap-1.5 sm:gap-4">
           <button 
             onClick={toggleMute}
-            className="p-1.5 sm:p-2 hover:bg-[#1a2f4c]/10 rounded-full transition-colors flex items-center justify-center border-2 border-[#1a2f4c]/10"
+            className="p-1 sm:p-2 hover:bg-[#1a2f4c]/10 rounded-full transition-colors flex items-center justify-center border-2 border-[#1a2f4c]/10"
             title={isMuted ? "Zapnout zvuky" : "Vypnout zvuky"}
           >
             {isMuted ? <VolumeX className="w-4 h-4 sm:w-5 sm:h-5 opacity-40" /> : <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />}
           </button>
           
-          <div className="hidden md:block">
+          <div className="hidden md:block text-right mr-2 sm:mr-4">
             <p className="text-[10px] font-bold uppercase opacity-60">Jednotka</p>
             <p className="text-xs font-black italic text-[#8b0000]">{user ? user.displayName?.split(' ')[0].toUpperCase() : 'NENASTOUPILA'}</p>
           </div>
@@ -314,200 +421,187 @@ export default function App() {
           {user ? (
             <button 
               onClick={() => setIsProfileOpen(true)}
-              className="w-10 h-10 rounded-full border-2 border-[#1a2f4c] bg-[#d9c2a3] flex items-center justify-center overflow-hidden hover:scale-110 transition-transform relative group"
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full border-2 border-[#1a2f4c] bg-[#d9c2a3] flex items-center justify-center overflow-hidden hover:scale-110 transition-transform relative group shrink-0"
             >
               {user.photoURL ? (
                 <img src={user.photoURL} alt="Profil" className="w-full h-full object-cover" />
               ) : (
-                <span className="text-lg">💂</span>
+                <span className="text-sm sm:text-lg">💂</span>
               )}
               <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                <Settings className="w-4 h-4 text-white" />
+                <Settings className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
               </div>
             </button>
           ) : (
             <button 
               onClick={handleLogin}
-              className="flex items-center gap-2 bg-[#1a2f4c] text-[#f4ebd0] px-3 py-2 rounded-sm font-black text-[10px] uppercase tracking-widest hover:bg-[#b8974a] transition-colors"
+              className="flex items-center gap-1 bg-[#1a2f4c] text-[#f4ebd0] px-2 sm:px-3 py-1.5 sm:py-2 rounded-sm font-black text-[8px] sm:text-[10px] uppercase tracking-widest hover:bg-[#b8974a] transition-colors shrink-0"
             >
-              <LogIn className="w-4 h-4" /> Vstup
+              <LogIn className="w-3 h-3 sm:w-4 sm:h-4" /> Vstup
             </button>
           )}
         </div>
       </header>
 
-      {/* Tabs Navigation - Fixed Bottom */}
-      <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-4xl flex border-t-4 border-[#1a2f4c] bg-[#efdfc4] z-50 shadow-[0_-4px_20px_rgba(0,0,0,0.15)]">
-        {[
-          { name: 'Marš', icon: '🎖️' },
-          { name: 'Hlášení', icon: '📜' },
-          { name: 'Kantýna', icon: '🍺' }
-        ].map((tab) => (
-          <motion.button
-            key={tab.name}
-            whileHover={{ backgroundColor: activeTab === tab.name ? '#1a2f4c' : 'rgba(26, 47, 76, 0.08)' }}
-            whileTap={{ scale: 0.94 }}
-            onClick={() => {
-              setActiveTab(tab.name);
-              playSound('CLICK');
-            }}
-            className={`flex-1 py-4 flex flex-col items-center gap-1 font-black text-[11px] uppercase tracking-wider transition-all border-r-2 border-[#1a2f4c] last:border-r-0 relative overflow-hidden ${
-              activeTab === tab.name 
-                ? 'bg-[#1a2f4c] text-[#fdfaf1]' 
-                : 'text-[#1a2f4c]'
-            }`}
-          >
-            {activeTab === tab.name && (
+      {/* Main Content Area - Scrollable with padding for bottom nav */}
+      <main className="flex-1 overflow-y-auto overflow-x-hidden relative scroll-smooth bg-[#efdfc4]/30">
+        <div className="pb-32 sm:pb-8 flex flex-col h-full"> 
+          <AnimatePresence mode="wait">
+            {activeTab === 'Marš' && (
               <motion.div 
-                layoutId="activeTab"
-                className="absolute inset-0 bg-[#1a2f4c] -z-10"
-                transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
-              />
-            )}
-            <motion.span 
-              animate={{ scale: activeTab === tab.name ? 1.2 : 1 }}
-              className="text-xl mb-0.5"
-            >
-              {tab.icon}
-            </motion.span>
-            {tab.name}
-          </motion.button>
-        ))}
-      </nav>
+                key="mars"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="p-2 sm:p-8 space-y-4 sm:space-y-6"
+              >
+                {/* Weather Update */}
+                <WeatherWidget />
 
-      <div className="flex-1 flex flex-col overflow-hidden pb-24">
-        {activeTab === 'Marš' && (
-          <div className="flex-1 flex flex-col p-3 sm:p-8 space-y-4 sm:space-y-8 h-full overflow-hidden">
-            {/* Interactive Military Map */}
-            <div className="flex-1 min-h-[350px] bg-[#d1d1b8] border-4 sm:border-[12px] border-[#3e342a] shadow-[inset_0_0_40px_rgba(0,0,0,0.2),10px_10px_20px_rgba(0,0,0,0.3)] relative overflow-hidden">
-               <MilitaryMap />
-            </div>
+                {/* Interactive Military Map */}
+                <div className="h-[45vh] sm:h-[450px] min-h-[300px] bg-[#d1d1b8] border-4 sm:border-[12px] border-[#3e342a] shadow-lg relative overflow-hidden shrink-0">
+                   <MilitaryMap otherSoldiers={globalStats as any[]} />
+                </div>
 
-            {/* Huge 3D Call to Action - Redesigned for mobile responsiveness */}
-            <div className="flex flex-col items-center justify-center gap-6 sm:gap-8 py-2 px-4 sm:px-12">
-              <div className="flex items-center justify-center gap-2 sm:gap-12 w-full">
-                {/* Hand-drawn Camera Icon */}
-                <motion.button 
-                  whileHover={{ scale: 1.1, rotate: -5 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex flex-col items-center p-2 text-[#1a2f4c] transition-transform"
-                >
-                  <svg className="w-10 h-10 sm:w-14 sm:h-14" viewBox="0 0 100 100" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20 35 L80 35 L85 45 L85 85 L15 85 L15 45 Z" />
-                    <circle cx="50" cy="62" r="15" />
-                    <rect x="40" y="25" width="20" height="10" />
-                  </svg>
-                  <span className="block text-[8px] font-black mt-1 uppercase tracking-widest text-center">Foto</span>
-                </motion.button>
+                {/* Huge 3D Call to Action - Redesigned for mobile responsiveness */}
+                <div className="flex flex-col items-center justify-center gap-4 sm:gap-8 pt-2 pb-6 px-2 sm:px-12 flex-1">
+                  <div className="flex items-center justify-center gap-2 sm:gap-12 w-full">
+                    {/* Hand-drawn Camera Icon */}
+                    <motion.button 
+                      whileHover={{ scale: 1.1, rotate: -5 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={startCamera}
+                      className="flex flex-col items-center p-2 text-[#1a2f4c] transition-transform"
+                    >
+                      <svg className="w-8 h-8 sm:w-14 sm:h-14" viewBox="0 0 100 100" fill="white" stroke="#1a2f4c" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 35 L80 35 L85 45 L85 85 L15 85 L15 45 Z" />
+                        <circle cx="50" cy="62" r="15" fill="#f4ebd0" />
+                        <rect x="40" y="25" width="20" height="10" />
+                      </svg>
+                      <span className="block text-[7px] sm:text-[8px] font-black mt-1 uppercase tracking-widest text-center">Foto</span>
+                    </motion.button>
 
-                {/* Main POSLUŠNĚ HLÁSÍM Button */}
-                <motion.button
-                  whileHover={{ 
-                    scale: 1.05,
-                    filter: "brightness(1.1)",
-                  }}
-                  whileTap={{ 
-                    scale: 0.92, 
-                    y: 6,
-                  }}
-                  animate={!isRecording ? { 
-                    scale: [1, 1.02, 1],
-                    boxShadow: [
-                      "0 10px 0 #9a7e3a, 0 15px 20px rgba(0,0,0,0.2)", 
-                      "0 12px 0 #9a7e3a, 0 20px 30px rgba(0,0,0,0.3)", 
-                      "0 10px 0 #9a7e3a, 0 15px 20px rgba(0,0,0,0.2)"
-                    ]
-                  } : {
-                    scale: [1, 1.05, 1],
-                    boxShadow: "0 4px 0 #4a0000"
-                  }}
-                  transition={{ 
-                    duration: 2, 
-                    repeat: Infinity, 
-                    ease: "easeInOut" 
-                  }}
-                  onClick={() => {
-                    toggleRecording();
-                  }}
-                  className={`w-36 h-36 sm:w-56 sm:h-56 rounded-full flex items-center justify-center text-center p-4 sm:p-8 transition-colors duration-300 relative group active:duration-75 shrink-0
-                    ${isRecording ? 'bg-red-700' : 'bg-[#b8974a] hover:bg-[#c9a85b]'}
-                    border-4 sm:border-8 border-[#1a2f4c]
-                  `}
-                >
-                  <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/30 to-transparent pointer-events-none"></div>
-                  
-                  {/* Dynamic Ring */}
+                    {/* Main POSLUŠNĚ HLÁSÍM Button */}
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.9, y: 4 }}
+                      animate={isRecording ? { scale: [1, 1.05, 1], ring: [4, 12, 4] } : {}}
+                      onClick={toggleRecording}
+                      className={`w-36 h-36 sm:w-56 sm:h-56 rounded-full flex flex-col items-center justify-center text-center p-3 sm:p-8 transition-colors duration-300 relative group shrink-0
+                        ${isRecording ? 'bg-red-700' : 'bg-[#b8974a] hover:bg-[#c9a85b]'}
+                        border-4 sm:border-8 border-[#1a2f4c] shadow-[0_8px_0_#9a7e3a,0_15px_15px_rgba(0,0,0,0.1)]
+                        ring-4 ${isRecording ? 'ring-red-400/50' : 'ring-white/30'} ring-offset-4 ring-offset-[#b8974a]
+                      `}
+                    >
+                      <span className={`text-[13px] sm:text-2xl font-black uppercase tracking-tighter font-serif leading-tight relative z-10 ${isRecording ? 'text-white' : 'text-[#1a2f4c]'}`}>
+                        {isRecording ? 'ZASTAVIT A ODESLAT' : 'POSLUŠNĚ HLÁSÍM'}
+                      </span>
+                      {isRecording && (
+                        <motion.div 
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          className="mt-2 flex gap-1 justify-center"
+                        >
+                          {[0, 1, 2].map(i => (
+                            <motion.div 
+                              key={i}
+                              animate={{ scaleY: [1, 2, 1], opacity: [0.3, 1, 0.3] }}
+                              transition={{ repeat: Infinity, duration: 0.5, delay: i * 0.1 }}
+                              className="w-1 h-3 bg-white rounded-full"
+                            />
+                          ))}
+                        </motion.div>
+                      )}
+                    </motion.button>
+
+                    {/* Text Note Button */}
+                    <motion.button 
+                      whileHover={{ scale: 1.1, rotate: 5 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={() => {
+                        setIsNoteOpen(!isNoteOpen);
+                        playSound('CLICK');
+                      }}
+                      className={`flex flex-col items-center p-2 transition-all ${isNoteOpen ? 'text-[#b8974a]' : 'text-[#1a2f4c]'}`}
+                    >
+                      <ScrollText className="w-8 h-8 sm:w-14 sm:h-14" />
+                      <span className="block text-[7px] sm:text-[8px] font-black mt-1 uppercase tracking-widest text-center">Zápis</span>
+                    </motion.button>
+                  </div>
+
                   <AnimatePresence>
-                    {isRecording && (
-                      <motion.div 
-                        initial={{ scale: 0.8, opacity: 0 }}
-                        animate={{ scale: 1.5, opacity: 0 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ repeat: Infinity, duration: 1.5 }}
-                        className="absolute inset-0 border-4 border-red-500 rounded-full pointer-events-none"
-                      />
+                    {isNoteOpen && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="w-full max-w-sm overflow-hidden"
+                      >
+                        <div className="bg-white border-4 border-[#1a2f4c] p-4 shadow-[4px_4px_0px_#1a2f4c] mb-4">
+                          <textarea
+                            value={inputText}
+                            onChange={(e) => setInputText(e.target.value)}
+                            placeholder="Zde pište hlášení v písemné formě..."
+                            className="w-full bg-transparent border-none focus:ring-0 font-serif italic text-sm min-h-[80px] resize-none"
+                            autoFocus
+                          />
+                          <div className="flex justify-end gap-2 mt-2">
+                             <button 
+                               onClick={() => setIsNoteOpen(false)}
+                               className="px-3 py-1 text-[10px] font-black uppercase tracking-widest opacity-40 hover:opacity-100"
+                             >
+                               Zrušit
+                             </button>
+                             <button 
+                               onClick={() => {
+                                 handleSend();
+                                 setIsNoteOpen(false);
+                               }}
+                               disabled={!inputText.trim()}
+                               className="bg-[#1a2f4c] text-[#f4ebd0] px-4 py-1 text-[10px] font-black uppercase tracking-widest hover:bg-[#b8974a] transition-colors disabled:opacity-30"
+                             >
+                               Odeslat
+                             </button>
+                          </div>
+                        </div>
+                      </motion.div>
                     )}
                   </AnimatePresence>
 
-                  <span className={`text-base sm:text-2xl font-black uppercase tracking-tighter font-serif leading-tight relative z-10 ${isRecording ? 'text-white' : 'text-[#1a2f4c]'}`}>
-                    {isRecording ? 'POSLOUCHÁM...' : 'POSLUŠNĚ HLÁSÍM'}
-                  </span>
-                  
-                  {/* Polish shine effect enhancement */}
-                  <motion.div 
-                    animate={{ 
-                      x: [-100, 300],
-                      opacity: [0, 0.5, 0]
-                    }}
-                    transition={{
-                      duration: 3,
-                      repeat: Infinity,
-                      repeatDelay: 2
-                    }}
-                    className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent skew-x-[-20deg] pointer-events-none"
-                  />
-                </motion.button>
+                  <div className="w-full max-w-sm bg-[#1a2f4c]/5 border-2 border-dashed border-[#1a2f4c]/20 p-4 sm:p-6 font-serif italic text-[11px] sm:text-sm text-center relative overflow-hidden">
+                     {isRecording ? (
+                       <div className="space-y-1">
+                         <p className="text-[10px] font-black uppercase tracking-widest text-[#8b0000] not-italic mb-2 animate-pulse">● Vojenský odposlech aktivní...</p>
+                         <p className="text-black/80">{inputText}{interimTranscript && <span className="opacity-40">{interimTranscript}</span>}</p>
+                         {!inputText && !interimTranscript && <p className="opacity-40">Mluvte jasně a zřetelně, vojíne!</p>}
+                       </div>
+                     ) : (
+                       allMessages.length > 0 
+                        ? `Posl. akce: "${allMessages[allMessages.length - 1].sender === 'user' ? allMessages[allMessages.length - 1].text?.substring(0, 30) : allMessages[allMessages.length - 1].response?.shvejk_comment?.substring(0, 30)}..."`
+                        : "Žádné hlášení v polní poště."
+                     )}
+                  </div>
+                </div>
 
-                {/* Hand-drawn Mic Icon */}
-                <motion.button 
-                  whileHover={{ scale: 1.1, rotate: 5 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={toggleRecording}
-                  className={`flex flex-col items-center p-2 transition-all ${isRecording ? 'text-red-700' : 'text-[#1a2f4c]'}`}
-                >
-                  <svg className="w-10 h-10 sm:w-14 sm:h-14" viewBox="0 0 100 100" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="35" y="20" width="30" height="45" rx="15" />
-                    <path d="M20 50 Q20 80 50 80 Q80 80 80 50" />
-                    <line x1="50" y1="80" x2="50" y2="95" />
-                    <line x1="30" y1="95" x2="70" y2="95" />
-                  </svg>
-                  <span className="block text-[8px] font-black mt-1 uppercase tracking-widest text-center">Hlas</span>
-                </motion.button>
-              </div>
+                <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
 
-              {/* Status/Last Activity Peek */}
-              <div className="w-full max-w-sm bg-[#1a2f4c]/5 border-2 border-dashed border-[#1a2f4c]/20 p-3 sm:p-4 font-serif italic text-[10px] sm:text-sm text-center">
-                 {allMessages.length > 0 
-                  ? `Posl. akce: "${allMessages[allMessages.length - 1].sender === 'user' ? allMessages[allMessages.length - 1].text : allMessages[allMessages.length - 1].response?.shvejk_comment?.substring(0, 40) + '...'}"`
-                  : "Žádné hlášení v polní poště."}
-              </div>
-            </div>
+                {/* Nature & Historical Context */}
+                <div className="px-2 sm:px-0">
+                  <NatureAnalysis />
+                </div>
+              </motion.div>
+            )}
 
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              onChange={handleImageUpload} 
-              className="hidden" 
-              accept="image/*"
-            />
-          </div>
-        )}
-
-        {activeTab === 'Hlášení' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-12 bg-[#efdfc4] scroll-smooth">
+            {activeTab === 'Hlášení' && (
+              <motion.div 
+                key="posta"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="p-3 sm:p-8 space-y-4"
+              >
             <h2 className="text-3xl font-black uppercase tracking-tighter font-serif border-b-4 border-[#1a2f4c] pb-2 mb-8 flex items-center gap-3">
-              <HistoryIcon className="w-8 h-8" /> Polní zpravodaj
+              <HistoryIcon className="w-8 h-8" /> Polní zpravodaj (Armádní sbor)
             </h2>
             
             <AnimatePresence mode="popLayout">
@@ -533,9 +627,14 @@ export default function App() {
                   </div>
 
                   <div className="relative z-10 flex justify-between items-start mb-6 border-b border-black/10 pb-2">
-                    <div>
-                      <p className="text-[10px] sm:text-xs font-black uppercase tracking-[0.2em] text-black/50">Odesílatel</p>
-                      <p className="text-lg font-black uppercase">Vojín {msg.sender === 'user' ? (user?.displayName || 'neznámý') : 'Josef Švejk'}</p>
+                    <div className="flex items-center gap-3">
+                      {(msg as any).userPhoto && (
+                        <img src={(msg as any).userPhoto} className="w-8 h-8 rounded-full border border-black/20" alt="Soldier" />
+                      )}
+                      <div>
+                        <p className="text-[10px] sm:text-xs font-black uppercase tracking-[0.2em] text-black/50">Soldat</p>
+                        <p className="text-lg font-black uppercase">Vojín {(msg as any).userName || (msg.sender === 'user' ? (user?.displayName || 'neznámý') : 'Josef Švejk')}</p>
+                      </div>
                     </div>
                     <div className="text-right">
                       <p className="text-[10px] sm:text-xs font-black uppercase tracking-[0.2em] text-black/50">Čas hlášení</p>
@@ -617,160 +716,158 @@ export default function App() {
                         className="p-2 hover:bg-black/5 rounded-full transition-colors"
                       >
                         <Share2 className="w-4 h-4 opacity-40 hover:opacity-100" />
-                      </button>
+                       </button>
                     </div>
                   </div>
                 </motion.div>
               ))}
             </AnimatePresence>
-          </div>
+          </motion.div>
         )}
 
-        {activeTab === 'Kantýna' && (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-10 bg-[#f4ebd0]">
-            <h2 className="text-3xl font-black uppercase tracking-tighter font-serif border-b-4 border-[#1a2f4c] pb-2 mb-8 flex items-center gap-3">
-              <Beer className="w-8 h-8" /> Polní Kantýna
-            </h2>
-
-            {/* Promile-O-Metr */}
-            <div className="shvejk-card flex flex-col items-center justify-center p-10 bg-white/50 backdrop-blur-sm relative overflow-hidden">
-              {/* Bubbles effect for high alcohol level */}
-              {stats.alcohol > 1.2 && (
-                <div className="absolute inset-x-0 bottom-0 top-1/2 pointer-events-none z-0 overflow-hidden flex justify-around items-end">
-                  {[...Array(6)].map((_, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ y: 20, opacity: 0, scale: 0.5 }}
-                      animate={{ 
-                        y: [-20, -150], 
-                        opacity: [0, 0.6, 0],
-                        scale: [0.5, 1.2, 0.8],
-                        x: [0, Math.sin(i) * 30, 0]
-                      }}
-                      transition={{ 
-                        duration: 2 + Math.random() * 2, 
-                        repeat: Infinity, 
-                        delay: i * 0.4,
-                        ease: "easeOut"
-                      }}
-                      className="w-4 h-4 rounded-full border-2 border-[#f97316]/30 bg-[#f97316]/10"
-                    />
-                  ))}
+            {activeTab === 'Kantýna' && (
+              <motion.div 
+                key="kantyna"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 1.05 }}
+                className="p-3 sm:p-8 space-y-6"
+              >
+                <div className="bg-[#1a2f4c] text-[#f4ebd0] p-6 border-4 border-[#b8974a] shadow-xl text-center">
+                  <h3 className="text-2xl font-black uppercase mb-1">Stav zásob</h3>
+                  <p className="text-xs opacity-70 italic tracking-widest">Příděly pro mužstvo</p>
                 </div>
-              )}
 
-              <p className="text-xs font-black uppercase tracking-[0.3em] mb-6 opacity-60 relative z-10">Aktuální lihoměr</p>
-              
-              <div className="relative w-64 h-32 overflow-hidden relative z-10">
-                <svg className="w-64 h-64" viewBox="0 0 100 100">
-                  <path d="M 20 80 A 40 40 0 0 1 80 80" fill="none" stroke="#e5e7eb" strokeWidth="12" strokeLinecap="round" />
-                  <motion.path 
-                    d="M 20 80 A 40 40 0 0 1 80 80" 
-                    fill="none" 
-                    stroke={stats.alcohol < 0.5 ? '#22c55e' : stats.alcohol < 1.5 ? '#f97316' : '#ef4444'} 
-                    strokeWidth="12" 
-                    strokeLinecap="round"
-                    initial={{ strokeDasharray: "0 100" }}
-                    animate={{ strokeDasharray: `${Math.min(stats.alcohol * 20, 100)} 100` }}
-                    transition={{ duration: 1.5, type: "spring", bounce: 0 }}
-                  />
-                </svg>
-                <div className="absolute bottom-0 left-1/2 -translate-x-1/2 text-center">
-                  <motion.p 
-                    key={stats.alcohol}
-                    initial={{ scale: 1 }}
-                    animate={{ scale: [1, 1.1, 1] }}
-                    className="text-5xl font-black"
-                  >
-                    {stats.alcohol}
-                  </motion.p>
-                  <p className="text-[10px] font-bold uppercase tracking-widest opacity-60">Promile (procent)</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white border-2 border-[#1a2f4c] p-4 text-center shadow-[4px_4px_0px_#1a2f4c]">
+                    <Beer className="w-8 h-8 mx-auto mb-2 text-[#b8974a]" />
+                    <p className="text-[10px] font-black uppercase opacity-60">Lihoměr</p>
+                    <p className="text-3xl font-black">{stats.alcohol} ‰</p>
+                  </div>
+                  <div className="bg-white border-2 border-[#1a2f4c] p-4 text-center shadow-[4px_4px_0_#1a2f4c]">
+                    <Flame className="w-8 h-8 mx-auto mb-2 text-[#8b0000]" />
+                    <p className="text-[10px] font-black uppercase opacity-60">Energie</p>
+                    <p className="text-3xl font-black">{stats.calories} kcal</p>
+                  </div>
                 </div>
-              </div>
 
-              <div className="mt-8 text-center bg-[#1a2f4c] text-[#f4ebd0] px-6 py-3 rounded-full shadow-lg border-2 border-[#b8974a] relative z-10">
-                 <p className="text-xs font-bold uppercase tracking-widest">
-                   {stats.alcohol === 0 ? 'Stav: Střízliv' : 
-                    stats.alcohol < 1 ? 'Stav: Lehká špička' : 
-                    'Stav: Putimský drak'}
-                 </p>
-                 <p className="text-[10px] italic opacity-70 mt-1 uppercase font-black">
-                   {stats.alcohol === 0 ? 'Schopen pochodu a bojového nasazení' : 
-                    stats.alcohol < 1 ? 'Schopen pochodu, leč mírně vrávorá' : 
-                    'Neschopen pochodu, nutno naložit na vůz'}
-                 </p>
-              </div>
-            </div>
+                <div className="bg-[#1a2f4c]/5 p-6 border-2 border-dashed border-[#1a2f4c]/20 text-center italic mb-4">
+                   <p className="text-xs sm:text-sm">
+                     {stats.alcohol > 1.0 
+                       ? "Mužstvo vesele zpívá rakouskou hymnu, leč kroky jsou nejisté." 
+                       : "Kázeň je vzorná, leč hrdla jsou vyschlá jako saharská poušť."}
+                   </p>
+                </div>
+              </motion.div>
+            )}
 
-            {/* Bitevní statistiky */}
-            <div className="grid grid-cols-2 gap-6">
-              <div className="shvejk-card p-8 flex flex-col items-center justify-center text-center group hover:bg-[#1a2f4c] hover:text-[#f4ebd0] transition-colors">
-                 <Flame className="w-12 h-12 mb-4 text-[#8b0000] group-hover:text-white" />
-                 <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-60">Spálený sádlo</p>
-                 <p className="text-4xl font-black">{stats.calories}</p>
-                 <p className="text-[8px] font-bold uppercase">kalorií</p>
-              </div>
-              <div className="shvejk-card p-8 flex flex-col items-center justify-center text-center group hover:bg-[#1a2f4c] hover:text-[#f4ebd0] transition-colors">
-                 <Footprints className="w-12 h-12 mb-4 text-[#1a2f4c] group-hover:text-white" />
-                 <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-60">Ušlá anabáze</p>
-                 <p className="text-4xl font-black">{(stats.calories / 130).toFixed(1)}</p>
-                 <p className="text-[8px] font-bold uppercase">kilometrů</p>
-              </div>
-            </div>
+            {activeTab === 'Statistiky' && (
+              <motion.div 
+                key="statistiky"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="p-3 sm:p-8 space-y-8"
+              >
+                <h2 className="text-3xl font-black uppercase tracking-tighter font-serif border-b-4 border-[#1a2f4c] pb-2 mb-8 flex items-center gap-3">
+                  <Trophy className="w-8 h-8" /> Hlášení generálního štábu
+                </h2>
 
-            {/* Leaderboard - Chalkboard */}
-            <div className="bg-[#0f1a0f] border-[12px] border-[#3e2723] rounded-sm p-6 shadow-2xl relative overflow-hidden">
-               <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/black-felt.png')]"></div>
-               <h3 className="text-2xl font-chalk uppercase tracking-widest text-[#f5f5f5] text-center mb-8 border-b-2 border-[#f5f5f5]/20 pb-4">
-                  🏆 Tabule slávy u Černého orla
-               </h3>
-               
-               <table className="w-full text-[#f5f5f5] font-chalk text-lg">
-                  <thead>
-                     <tr className="border-b border-[#f5f5f5]/10">
-                        <th className="text-left py-2 px-2 opacity-60">Vojín</th>
-                        <th className="text-right py-2 px-2 opacity-60">Promile</th>
-                        <th className="text-right py-2 px-2 opacity-60">Km</th>
-                     </tr>
-                  </thead>
-                  <tbody>
-                     <tr className="border-b border-[#f5f5f5]/5">
-                        <td className="py-4 px-2 flex items-center gap-3">
-                           <span className="text-yellow-400">1.</span> Kadet Biegler
-                        </td>
-                        <td className="text-right py-4 px-2 text-yellow-400 font-bold">2.4 ‰</td>
-                        <td className="text-right py-4 px-2 opacity-80">14.2</td>
-                     </tr>
-                     <tr className="border-b border-[#f5f5f5]/5">
-                        <td className="py-4 px-2 flex items-center gap-3">
-                           <span className="text-gray-300">2.</span> {user ? user.displayName : 'Vojín v zácviku'} (VY)
-                        </td>
-                        <td className="text-right py-4 px-2 font-bold">{stats.alcohol} ‰</td>
-                        <td className="text-right py-4 px-2 opacity-80">{(stats.calories / 130).toFixed(1)}</td>
-                     </tr>
-                     <tr className="">
-                        <td className="py-4 px-2 flex items-center gap-3">
-                           <span className="text-amber-600">3.</span> Baloun
-                        </td>
-                        <td className="text-right py-4 px-2 font-bold">0.8 ‰</td>
-                        <td className="text-right py-4 px-2 opacity-80">42.0</td>
-                     </tr>
-                  </tbody>
-               </table>
-               
-               <div className="mt-8 pt-4 border-t border-[#f5f5f5]/20 text-center text-[#f5f5f5]/40 text-[10px] italic uppercase tracking-widest">
-                  Aktualizováno polním kurýrem před 15 minutami
-               </div>
-            </div>
-          </div>
-        )}
-      </div>
+                {/* Aggregate Unit Stats */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                   <div className="bg-[#1a2f4c] text-[#f4ebd0] p-6 shadow-xl border-4 border-[#b8974a] flex flex-col items-center justify-center text-center">
+                     <Flame className="w-10 h-10 mb-2 opacity-50" />
+                     <p className="text-[10px] font-black uppercase tracking-[0.2em]">Společné úsilí (Kalorie)</p>
+                     <p className="text-4xl font-black">{totalUnitCalories.toLocaleString()} <span className="text-xs uppercase">kcal</span></p>
+                     <p className="text-[8px] italic mt-2 opacity-60">Celkový spálený tuk celého sboru</p>
+                   </div>
+                   <div className="bg-[#b8974a] text-[#1a2f4c] p-6 shadow-xl border-4 border-[#1a2f4c] flex flex-col items-center justify-center text-center">
+                     <Beer className="w-10 h-10 mb-2 opacity-50" />
+                     <p className="text-[10px] font-black uppercase tracking-[0.2em]">Bojová nálada (Průměr)</p>
+                     <p className="text-4xl font-black">{avgUnitAlcohol} <span className="text-xs uppercase">‰</span></p>
+                     <p className="text-[8px] italic mt-2 opacity-60">Průměrná hladina veselosti v krvi</p>
+                   </div>
+                </div>
 
-      <footer className="hidden p-6 bg-[#1a2f4c] text-[#f4ebd0] sm:flex flex-col sm:flex-row justify-between items-center text-[10px] font-bold uppercase tracking-widest shrink-0">
+                {/* Participant Table */}
+                <div className="shvejk-card p-4 sm:p-8 bg-white/40">
+                   <h3 className="text-xl font-black uppercase mb-6 flex items-center gap-2 border-b border-black/10 pb-2">
+                     <User className="w-5 h-5 text-[#1a2f4c]" /> Seznam vojínů v poli
+                   </h3>
+                   <div className="overflow-x-auto">
+                     <table className="w-full text-left font-serif">
+                       <thead>
+                         <tr className="border-b-2 border-[#1a2f4c] text-[10px] sm:text-xs font-black uppercase tracking-widest text-black/50">
+                           <th className="py-3 px-2">Pořadí</th>
+                           <th className="py-3 px-2">Vojín</th>
+                           <th className="py-3 px-2 text-right">Lihoměr</th>
+                           <th className="py-3 px-2 text-right">Kalorie</th>
+                         </tr>
+                       </thead>
+                       <tbody className="text-sm sm:text-base">
+                         {(globalStats as any[])?.map((s, i) => (
+                           <tr key={s.userId} className="border-b border-black/5 hover:bg-[#b8974a]/5 transition-colors">
+                             <td className="py-4 px-2 font-black">{i + 1}.</td>
+                             <td className="py-4 px-2">
+                               <div className="flex items-center gap-3">
+                                 {s.userPhoto ? (
+                                   <img src={s.userPhoto} className="w-8 h-8 rounded-full border border-black/10" alt="" />
+                                 ) : (
+                                   <div className="w-8 h-8 rounded-full bg-[#1a2f4c] flex items-center justify-center text-white text-[10px]">💂</div>
+                                 )}
+                                 <span className="font-black uppercase text-[12px] sm:text-sm truncate max-w-[120px]">
+                                   {s.userName || 'Neznámý vojín'}
+                                 </span>
+                               </div>
+                             </td>
+                             <td className="py-4 px-2 text-right font-black text-[#b8974a]">{s.currentAlcohol} ‰</td>
+                             <td className="py-4 px-2 text-right font-bold opacity-70">{s.totalCalories}</td>
+                           </tr>
+                         ))}
+                       </tbody>
+                     </table>
+                   </div>
+                   <div className="mt-8 pt-4 border-t border-dashed border-black/10 text-center italic text-[10px] opacity-50 uppercase tracking-widest">
+                     Konec hlášení hloubkové analýzy štábu
+                   </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </main>
+
+      <footer className="hidden sm:flex p-6 bg-[#1a2f4c] text-[#f4ebd0] flex-row justify-between items-center text-[10px] font-bold uppercase tracking-widest shrink-0">
         <span className="opacity-60">© 1914—2026 C.K. Informační Služba</span>
         <span className="text-[#b8974a]">Písek — Zátaví — Putim</span>
         <span className="opacity-60">Kaiser-Josef-Gasse 1, Písek</span>
       </footer>
+
+      {/* Floating Bottom Navigation Tabs */}
+      <nav className="fixed bottom-4 left-4 right-4 sm:static flex bg-[#f4ebd0] border-4 border-[#1a2f4c] z-50 shadow-2xl rounded-2xl overflow-hidden sm:rounded-none sm:border-t-0 sm:border-x-0 sm:border-b-4 sm:shadow-none sm:left-0 sm:right-0 sm:bottom-0">
+        {[
+          { name: 'Marš', icon: MapPin },
+          { name: 'Hlášení', icon: ScrollText },
+          { name: 'Kantýna', icon: Beer },
+          { name: 'Statistiky', icon: Trophy }
+        ].map((tab) => (
+          <button
+            key={tab.name}
+            onClick={() => {
+              setActiveTab(tab.name);
+              playSound('CLICK');
+            }}
+            className={`flex-1 py-3 sm:py-4 flex flex-col items-center gap-1 font-black text-[9px] sm:text-[11px] uppercase tracking-wider transition-all border-r-2 border-[#1a2f4c] last:border-r-0 border-t-2 border-white/20 relative outline-1 outline-white/10 ${
+              activeTab === tab.name 
+                ? 'bg-[#1a2f4c] text-[#fdfaf1] ring-inset ring-2 ring-white/20' 
+                : 'text-[#1a2f4c]'
+            }`}
+          >
+            <tab.icon className={`w-4 h-4 sm:w-6 sm:h-6 ${activeTab === tab.name ? 'animate-bounce' : ''}`} />
+            <span>{tab.name}</span>
+          </button>
+        ))}
+      </nav>
 
       <ProfileModal 
         isOpen={isProfileOpen}
@@ -778,6 +875,64 @@ export default function App() {
         profile={profile}
         onLogout={handleLogout}
       />
+
+      {/* Military Camera Overlay */}
+      <AnimatePresence>
+        {isCameraActive && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center"
+          >
+            <div className="absolute inset-0 z-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'url("https://www.transparenttextures.com/patterns/film-grain.png")' }}></div>
+            
+            {/* Viewfinder Overlay */}
+            <div className="absolute inset-0 z-10 pointer-events-none flex flex-col">
+              <div className="flex-1 flex justify-between p-4">
+                <div className="w-8 h-8 border-t-2 border-l-2 border-[#b8974a]" />
+                <div className="w-8 h-8 border-t-2 border-r-2 border-[#b8974a]" />
+              </div>
+              <div className="flex-1 flex justify-between p-4 items-end">
+                <div className="w-8 h-8 border-b-2 border-l-2 border-[#b8974a]" />
+                <div className="w-8 h-8 border-b-2 border-r-2 border-[#b8974a]" />
+              </div>
+            </div>
+
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline 
+              className="w-full h-full object-cover grayscale-[0.2] sepia-[0.1]" 
+            />
+
+            {/* Camera Controls */}
+            <div className="absolute bottom-12 left-0 right-0 z-20 flex justify-center items-center gap-12 px-8">
+              <button 
+                onClick={stopCamera}
+                className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border-2 border-white/30 flex items-center justify-center"
+              >
+                <X className="w-6 h-6 text-white" />
+              </button>
+
+              <button 
+                onClick={takePhoto}
+                className="w-20 h-20 rounded-full bg-white border-8 border-white/30 shadow-2xl flex items-center justify-center active:scale-90 transition-transform"
+              >
+                <div className="w-12 h-12 rounded-full border-2 border-[#1a2f4c]" />
+              </button>
+
+              <div className="w-12 h-12 flex items-center justify-center">
+                 <p className="text-[8px] font-black uppercase text-white/50 tracking-widest text-center">Armádní<br/>fokus</p>
+              </div>
+            </div>
+
+            <div className="absolute top-8 left-0 right-0 text-center z-20">
+               <p className="text-[10px] font-black uppercase text-[#b8974a] tracking-[0.4em] drop-shadow-md">Polní dokumentace v.1914</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

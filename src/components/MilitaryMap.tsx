@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary, InfoWindow, useAdvancedMarkerRef } from '@vis.gl/react-google-maps';
-import { Crosshair, Search, Map as MapIcon, Navigation, Star } from 'lucide-react';
+import { Crosshair, Search, Map as MapIcon, Navigation, Star, Layers, Target } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { auth } from '../lib/firebase';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -179,15 +180,15 @@ function SearchBox({ onPlaceSelect }: { onPlaceSelect: (place: google.maps.place
   }, [placesLib, onPlaceSelect]);
 
   return (
-    <div className="absolute top-2 left-2 sm:top-4 sm:left-4 z-[1001] w-[calc(100%-16px)] sm:w-80">
+    <div className="absolute top-2 left-2 sm:top-4 sm:left-4 z-[1001] w-[calc(100%-16px)] sm:w-72 max-w-[280px]">
       <div className="relative group">
         <input 
           ref={inputRef}
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Hledat adresu nebo GPS..."
-          className="w-full bg-[#f4ebd0] border-2 border-[#1a2f4c] p-2 sm:p-3 pl-10 font-serif text-xs sm:text-sm italic shadow-[4px_4px_0px_#1a2f4c] sm:shadow-[6px_6px_0px_#1a2f4c] focus:outline-none focus:bg-white transition-all"
+          placeholder="Hledat adresu/GPS..."
+          className="w-full bg-[#f4ebd0] border-2 border-[#1a2f4c] p-2 sm:p-3 pl-10 font-serif text-[11px] sm:text-sm italic shadow-[4px_4px_0px_#1a2f4c] sm:shadow-[6px_6px_0px_#1a2f4c] focus:outline-none focus:bg-white transition-all"
         />
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#1a2f4c] opacity-60" />
       </div>
@@ -196,6 +197,30 @@ function SearchBox({ onPlaceSelect }: { onPlaceSelect: (place: google.maps.place
       </div>
     </div>
   );
+}
+
+function LegendaryPath() {
+  const map = useMap();
+  const mapsLib = useMapsLibrary('maps');
+  const polylineRef = useRef<google.maps.Polyline | null>(null);
+
+  useEffect(() => {
+    if (!map || !mapsLib) return;
+
+    const path = new google.maps.Polyline({
+      path: routePositions,
+      geodesic: true,
+      strokeColor: '#3e342a',
+      strokeOpacity: 0.4,
+      strokeWeight: 4,
+      map: map,
+    });
+
+    polylineRef.current = path;
+    return () => path.setMap(null);
+  }, [map, mapsLib]);
+
+  return null;
 }
 
 function RoutePlanner({ origin, target }: { origin: google.maps.LatLngLiteral | null, target: google.maps.LatLngLiteral | null }) {
@@ -216,7 +241,7 @@ function RoutePlanner({ origin, target }: { origin: google.maps.LatLngLiteral | 
     routesLib.Route.computeRoutes({
       origin: { location: { lat: origin.lat, lng: origin.lng } },
       destination: { location: { lat: target.lat, lng: target.lng } },
-      travelMode: 'WALKING' as any, // Using 'WALKING' but cast to any if needed to avoid enum issues
+      travelMode: 'WALKING' as any, 
       fields: ['path', 'distanceMeters', 'durationMillis', 'viewport'],
     }).then(({ routes }) => {
       if (routes?.[0]) {
@@ -224,12 +249,20 @@ function RoutePlanner({ origin, target }: { origin: google.maps.LatLngLiteral | 
         newPolylines.forEach(polyline => {
           polyline.setOptions({
             strokeColor: '#8b0000',
-            strokeWeight: 5,
-            strokeOpacity: 0.8,
+            strokeWeight: 8,
+            strokeOpacity: 0.9,
+            // Adding a "casing" effect for high visibility
+            zIndex: 100,
             icons: [{
-              icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 4 },
+              icon: { 
+                path: 'M 0,-1.5 0,1.5', 
+                strokeOpacity: 1, 
+                scale: 4,
+                strokeColor: '#f4ebd0',
+                strokeWeight: 2
+              },
               offset: '0',
-              repeat: '20px'
+              repeat: '12px'
             }]
           });
           polyline.setMap(map);
@@ -252,23 +285,24 @@ function RoutePlanner({ origin, target }: { origin: google.maps.LatLngLiteral | 
   if (!routeInfo) return null;
 
   return (
-    <div className="absolute top-20 right-4 z-[1001] bg-[#1a2f4c] text-[#f4ebd0] p-3 font-serif border-2 border-[#b8974a] shadow-lg max-w-[150px]">
-      <p className="text-[10px] font-black uppercase border-b border-[#f4ebd0]/20 mb-2 pb-1 flex items-center gap-2">
-        <Navigation className="w-3 h-3" /> Plán pochodu
+    <div className="absolute top-12 sm:top-20 right-2 sm:right-4 z-[1001] bg-[#1a2f4c] text-[#f4ebd0] p-2 sm:p-3 font-serif border-2 border-[#b8974a] shadow-lg max-w-[120px] sm:max-w-[150px]">
+      <p className="text-[8px] sm:text-[10px] font-black uppercase border-b border-[#f4ebd0]/20 mb-1 sm:mb-2 pb-1 flex items-center gap-1 sm:gap-2">
+        <Navigation className="w-2.5 h-2.5 sm:w-3 h-3" /> Plán pochodu
       </p>
-      <div className="space-y-1">
+      <div className="space-y-0.5 sm:space-y-1">
         <div className="flex justify-between">
-          <span className="text-[9px] uppercase opacity-60">Trasa</span>
-          <span className="text-xs font-bold">{routeInfo.distance}</span>
+          <span className="text-[7px] sm:text-[9px] uppercase opacity-60">Trasa</span>
+          <span className="text-[10px] sm:text-xs font-bold">{routeInfo.distance}</span>
         </div>
         <div className="flex justify-between">
-          <span className="text-[9px] uppercase opacity-60">Čas</span>
-          <span className="text-xs font-bold">{routeInfo.duration}</span>
+          <span className="text-[7px] sm:text-[9px] uppercase opacity-60">Čas</span>
+          <span className="text-[10px] sm:text-xs font-bold">{routeInfo.duration}</span>
         </div>
       </div>
     </div>
   );
 }
+
 
 // --- Main Component ---
 
@@ -333,11 +367,83 @@ const MarkerWithInfo: React.FC<{ m: StaticMarkerData }> = ({ m }) => {
   );
 };
 
-export default function MilitaryMap() {
+interface HistoricalMarkerData {
+  position: google.maps.LatLngLiteral;
+  title: string;
+}
+
+function MarchToPutimButton({ onTargetPutim }: { onTargetPutim: () => void }) {
+  return (
+    <button 
+      onClick={onTargetPutim}
+      className="bg-[#8b0000] text-[#f4ebd0] border-2 border-[#1a2f4c] px-3 py-2 text-[8px] sm:text-[10px] font-black uppercase tracking-widest shadow-[4px_4px_0px_#1a2f4c] active:shadow-none translate-x-[-10px] active:translate-x-[-6px] active:translate-y-[-6px] transition-all hover:bg-[#a00000] flex items-center gap-2"
+      title="Mašírovat do Putimi"
+    >
+      <Navigation className="w-3 h-3" />
+      <span>Mašírovat do Putimi!</span>
+    </button>
+  );
+}
+
+function MapTypeToggle({ type, onToggle }: { type: string, onToggle: (val: any) => void }) {
+  const isSatellite = type === 'satellite' || type === 'hybrid';
+  return (
+    <button 
+      onClick={() => onToggle(isSatellite ? 'roadmap' : 'satellite')}
+      className={`w-10 h-10 sm:w-12 sm:h-12 border-2 border-[#1a2f4c] flex items-center justify-center shadow-[4px_4px_0px_#1a2f4c] active:shadow-none translate-x-[-10px] translate-y-[-10px] active:translate-x-[-6px] active:translate-y-[-6px] transition-all hover:bg-white group ${isSatellite ? 'bg-[#1a2f4c] text-[#f4ebd0]' : 'bg-[#f4ebd0] text-[#1a2f4c]'}`}
+      title={isSatellite ? "Přepnout na polní mapu" : "Přepnout na satelitní průzkum"}
+    >
+      <Layers className="w-5 h-5 sm:w-6 h-6" />
+    </button>
+  );
+}
+
+function OverviewButton({ userPos }: { userPos: google.maps.LatLngLiteral | null }) {
+  const map = useMap();
+  
+  const handleOverview = () => {
+    if (!userPos || !map) return;
+    map.panTo(userPos);
+    map.setZoom(10);
+  };
+
+  if (!userPos) return null;
+
+  return (
+    <button 
+      onClick={handleOverview}
+      className="w-10 h-10 sm:w-12 sm:h-12 bg-[#1a2f4c] text-[#f4ebd0] border-2 border-[#b8974a] flex items-center justify-center shadow-[4px_4px_0px_#1a2f4c] active:shadow-none translate-x-[0px] translate-y-[0px] active:translate-x-[4px] active:translate-y-[4px] transition-all hover:bg-[#2a3f5c] group"
+      title="Návrat k jednotce (Taktický přehled)"
+    >
+       <motion.div whileHover={{ scale: 1.2 }}>
+         <Target className="w-5 h-5 sm:w-6 h-6 text-[#b8974a]" />
+       </motion.div>
+    </button>
+  );
+}
+
+export default function MilitaryMap({ otherSoldiers = [] }: { otherSoldiers?: any[] }) {
   const [mapCenter, setMapCenter] = useState<google.maps.LatLngLiteral>(routePositions[1]);
   const [userPos, setUserPos] = useState<google.maps.LatLngLiteral | null>(null);
   const [targetPos, setTargetPos] = useState<google.maps.LatLngLiteral | null>(null);
   const [isHistoricalEnabled, setIsHistoricalEnabled] = useState(false);
+  const [mapTypeId, setMapTypeId] = useState<string>('roadmap');
+
+  const handleTargetPutim = () => {
+    const putimPos = routePositions[2];
+    setTargetPos(putimPos);
+    setMapCenter(putimPos);
+  };
+
+  // Derive soldiers positions for visual effect (collaborative story)
+  // In a real app we'd fetch their actual lat/lng, here we'll offset them slightly from path points
+  const allies = otherSoldiers?.filter(s => s.userId !== auth.currentUser?.uid).map((s, i) => ({
+    ...s,
+    position: {
+      lat: routePositions[i % routePositions.length].lat + (Math.random() - 0.5) * 0.05,
+      lng: routePositions[i % routePositions.length].lng + (Math.random() - 0.5) * 0.05,
+    }
+  }));
 
   if (!hasValidKey) {
     return (
@@ -361,7 +467,8 @@ export default function MilitaryMap() {
           defaultCenter={mapCenter}
           center={mapCenter}
           defaultZoom={12}
-          mapId="MILITARY_MAP_001"
+          mapTypeId={mapTypeId}
+          mapId={mapTypeId === 'roadmap' ? "MILITARY_MAP_001" : undefined}
           internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
           className="w-full h-full"
           disableDefaultUI={true}
@@ -381,18 +488,31 @@ export default function MilitaryMap() {
 
           <HistoricalLayer enabled={isHistoricalEnabled} />
 
+          <LegendaryPath />
+
           <RoutePlanner origin={userPos} target={targetPos} />
 
           <MapControl position={google.maps.ControlPosition.RIGHT_BOTTOM}>
-            <div className="flex flex-col gap-4">
-              <HistoricalMapToggle 
-                enabled={isHistoricalEnabled} 
-                onToggle={setIsHistoricalEnabled} 
-              />
-              <LocateButton onLocate={(pos) => {
-                setUserPos(pos);
-                setMapCenter(pos);
-              }} />
+            <div className="flex flex-col gap-4 items-end mb-4 mr-4">
+              <MarchToPutimButton onTargetPutim={handleTargetPutim} />
+              
+              <div className="flex flex-col gap-4">
+                <MapTypeToggle 
+                  type={mapTypeId} 
+                  onToggle={setMapTypeId} 
+                />
+                <HistoricalMapToggle 
+                  enabled={isHistoricalEnabled} 
+                  onToggle={setIsHistoricalEnabled} 
+                />
+                <div className="flex gap-4 items-center h-12">
+                  <OverviewButton userPos={userPos} />
+                  <LocateButton onLocate={(pos) => {
+                    setUserPos(pos);
+                    setMapCenter(pos);
+                  }} />
+                </div>
+              </div>
             </div>
           </MapControl>
 
@@ -409,6 +529,23 @@ export default function MilitaryMap() {
              </AdvancedMarker>
           )}
 
+          {allies?.map((ally, i) => (
+             <AdvancedMarker key={ally.userId} position={ally.position}>
+                <div className="relative group">
+                  <div className="w-6 h-6 bg-[#b8974a] rounded-full border-2 border-[#1a2f4c] shadow-md flex items-center justify-center overflow-hidden">
+                    {ally.userPhoto ? (
+                      <img src={ally.userPhoto} alt={ally.userName} className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-[10px]">💂</span>
+                    )}
+                  </div>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 bg-[#1a2f4c] text-[#fdfaf1] text-[6px] px-1 whitespace-nowrap mb-1 opacity-0 group-hover:opacity-100 transition-opacity font-black uppercase">
+                    {ally.userName || 'Vojín'}
+                  </div>
+                </div>
+             </AdvancedMarker>
+          ))}
+
           {targetPos && (
             <AdvancedMarker position={targetPos}>
               <Pin background="#b8974a" glyph="?" />
@@ -418,20 +555,20 @@ export default function MilitaryMap() {
       </APIProvider>
 
       {targetPos && (
-        <div className="absolute bottom-20 left-4 z-[1001] bg-white/80 border border-[#1a2f4c] p-2 text-[10px] font-mono">
-          CÍL: {targetPos.lat.toFixed(5)}, {targetPos.lng.toFixed(5)}
+        <div className="absolute top-28 left-2 z-[1001] bg-white/80 border border-[#1a2f4c] p-1.5 text-[8px] font-mono shadow-sm sm:static sm:top-auto sm:left-auto">
+          CÍL: {targetPos.lat.toFixed(4)}, {targetPos.lng.toFixed(4)}
         </div>
       )}
 
       <AnimatePresence>
         {isHistoricalEnabled && (
           <motion.div 
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-            className="absolute bottom-24 right-4 z-[1001] bg-[#1a2f4c]/90 text-[#f4ebd0] px-3 py-1 text-[8px] font-black uppercase tracking-[0.2em] border border-[#b8974a] shadow-xl"
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            className="absolute bottom-28 left-2 sm:bottom-24 sm:right-4 z-[1001] bg-[#1a2f4c]/90 text-[#f4ebd0] px-2 py-0.5 sm:px-3 sm:py-1 text-[7px] sm:text-[8px] font-black uppercase tracking-[0.1em] sm:tracking-[0.2em] border border-[#b8974a] shadow-xl"
           >
-            Aktivní: 2. vojenské mapování (1836–1852)
+            2. vojenské mapování active
           </motion.div>
         )}
       </AnimatePresence>
