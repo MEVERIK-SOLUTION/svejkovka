@@ -5,13 +5,14 @@
 
 import React, { useState, useRef, useEffect, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Beer, Flame, MapPin, Camera, Mic, Send, Smile, History, Image as ImageIcon, X, History as HistoryIcon, Share2, Check, Footprints, Trophy, User, Volume2, VolumeX, LogIn, LogOut, Settings, ScrollText } from 'lucide-react';
+import { Beer, Flame, MapPin, Camera, Mic, Send, Smile, History, Image as ImageIcon, X, History as HistoryIcon, Share2, Check, Footprints, Trophy, User, Volume2, VolumeX, LogIn, LogOut, Settings, ScrollText, Wine, Navigation, Target, Map as MapIcon } from 'lucide-react';
 import { getShvejkAnalysis, ShvejkResponse } from './services/geminiService';
 import { playSound, stopSound, setMuted, getMuted } from './lib/sounds';
-import MilitaryMap from './components/MilitaryMap';
+import MilitaryMap, { routePositions } from './components/MilitaryMap';
 import ProfileModal from './components/ProfileModal';
 import NatureAnalysis from './components/NatureAnalysis';
 import WeatherWidget from './components/WeatherWidget';
+import { historizeImage } from './services/vintageImageService';
 
 // Firebase
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './lib/firebase';
@@ -62,19 +63,88 @@ export default function App() {
   const [stats, setStats] = useState<Stats>({ alcohol: 0, calories: 0, mood: 'Vynikající' });
   const [activeTab, setActiveTab] = useState('Marš');
   const [isTyping, setIsTyping] = useState(false);
+  const [isStylizing, setIsStylizing] = useState(false);
+  const [isNoteOpen, setIsNoteOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(getMuted());
+
+  // March Log States
+  const [marchDistance, setMarchDistance] = useState("5");
+  const [marchMinutes, setMarchMinutes] = useState("60");
+
+  // Calculate distance of the route
+  const getRouteDistance = () => {
+    let total = 0;
+    for (let i = 0; i < routePositions.length - 1; i++) {
+      const p1 = routePositions[i];
+      const p2 = routePositions[i + 1];
+      const rad = Math.PI / 180;
+      const dLat = (p2.lat - p1.lat) * rad;
+      const dLon = (p2.lng - p1.lng) * rad;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(p1.lat * rad) * Math.cos(p2.lat * rad) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      total += 6371 * c; // Radius of Earth in km
+    }
+    return total;
+  };
+
+  const handleUseMapDistance = () => {
+    const dist = getRouteDistance();
+    setMarchDistance(dist.toFixed(1));
+    playSound('CLICK');
+  };
+
+  const handleLogMarch = async () => {
+    if (!user) return;
+    const dist = parseFloat(marchDistance);
+    const mins = parseFloat(marchMinutes);
+    if (isNaN(dist) || isNaN(mins)) return;
+
+    const pace = mins / dist;
+    const caloriesBurned = Math.round(dist * (userProfileData?.weight || 80) * 1.03);
+    const steps = Math.round(dist * 1312);
+
+    playSound('SUCCESS');
+    handleSend(`Hlásím ústup/postup! Ušel jsem ${dist} km za ${mins} minut (tempo ${pace.toFixed(1)} min/km). Spáleno cca ${caloriesBurned} kcal a ujeto ${steps} kroků.`, undefined, {
+      calories_est: caloriesBurned,
+      march_data: { distance: dist, time: mins, pace, steps }
+    });
+  };
+
+  const handleAddBeer = () => {
+    if (!user) return;
+    playSound('CLICK');
+    // Simplified Widmark formula roughly for 0.5l beer for 80kg male
+    const alcoholGain = 0.3; 
+    handleSend("Poslušně hlásím, jedno orosené pivo padlo za vlast!", undefined, {
+      alcohol_est: alcoholGain
+    });
+  };
+
+  const handleAddRum = () => {
+    if (!user) return;
+    playSound('CLICK');
+    const alcoholGain = 0.2; 
+    handleSend("Štamprle rumu na zahřátí morálky!", undefined, {
+      alcohol_est: alcoholGain
+    });
+  };
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
 
-  // Combine messages
-  const allMessages = [...(dbMessages?.map(m => ({ 
-    ...m, 
-    id: m.id || Math.random().toString(), 
-    timestamp: m.timestamp?.toDate() || new Date(),
-    sender: m.sender || 'shvejk' 
-  })) || []).reverse(), ...localMessages] as Message[];
+  // Combine messages using useMemo to prevent infinite loops
+  const allMessages = React.useMemo(() => {
+    const dbMsgs = dbMessages?.map(m => ({ 
+      ...m, 
+      id: m.id || m.timestamp?.seconds?.toString() || 'shvejk-msg', 
+      timestamp: m.timestamp?.toDate() || new Date(),
+      sender: m.sender || 'shvejk' 
+    })) || [];
+    return [...dbMsgs.reverse(), ...localMessages] as Message[];
+  }, [dbMessages, localMessages]);
 
   // Stats calculation based on messages
   useEffect(() => {
@@ -87,11 +157,19 @@ export default function App() {
           totalCal += m.response.calories_est || 0;
         }
       });
-      setStats(prev => ({ 
-        ...prev, 
-        alcohol: Number(totalAlc.toFixed(2)), 
-        calories: Math.round(totalCal) 
-      }));
+      
+      const newAlc = Number(totalAlc.toFixed(2));
+      const newCal = Math.round(totalCal);
+
+      // Only update if values actually changed to prevent infinite loops
+      setStats(prev => {
+        if (prev.alcohol === newAlc && prev.calories === newCal) return prev;
+        return { 
+          ...prev, 
+          alcohol: newAlc, 
+          calories: newCal 
+        };
+      });
     }
   }, [allMessages]);
 
@@ -127,8 +205,6 @@ export default function App() {
   
   const [isRecording, setIsRecording] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState('');
-  
-  const [isNoteOpen, setIsNoteOpen] = useState(false);
   
   const [isCameraActive, setIsCameraActive] = useState(false);
   
@@ -265,7 +341,8 @@ export default function App() {
         // Compress slightly for Firestore/Gemini
         const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
         stopCamera();
-        handleSend("Poslušně hlásím, posílám snímek z fronty!", dataUrl);
+        setSelectedImage(dataUrl);
+        setIsNoteOpen(true);
       }
     }
   };
@@ -276,14 +353,15 @@ export default function App() {
     }
   }, [allMessages, isTyping]);
 
-  const handleSend = async (text: string = inputText, image: string | null = selectedImage) => {
-    if (!text.trim() && !image) return;
+  const handleSend = async (text: string = inputText, image: string | null = selectedImage, manualMeta?: any) => {
+    if (!text.trim() && !image && !manualMeta) return;
 
     const newMessage: Message = {
       id: Date.now().toString(),
       sender: 'user',
       text: text,
       image: image || undefined,
+      response: manualMeta || undefined,
       timestamp: new Date(),
     };
 
@@ -320,10 +398,14 @@ export default function App() {
             image: image || null,
             timestamp: serverTimestamp(),
             sender: 'user', 
-            shvejk_comment: response.shvejk_comment,
-            alcohol_est: response.alcohol_est,
-            calories_est: response.calories_est,
-            location_fact: response.location_fact
+            response: {
+              ...(response || {}),
+              ...(manualMeta || {})
+            },
+            shvejk_comment: response?.shvejk_comment || manualMeta?.shvejk_comment || "",
+            alcohol_est: response?.alcohol_est || manualMeta?.alcohol_est || 0,
+            calories_est: response?.calories_est || manualMeta?.calories_est || 0,
+            location_fact: response?.location_fact || ""
           });
 
           // Update user stats
@@ -363,9 +445,24 @@ export default function App() {
       reader.onloadend = () => {
         const img = reader.result as string;
         setSelectedImage(img);
-        handleSend("", img);
+        setIsNoteOpen(true);
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const handleStylize = async () => {
+    if (!selectedImage || isStylizing) return;
+    setIsStylizing(true);
+    playSound('CLICK');
+    try {
+      const styled = await historizeImage(selectedImage);
+      if (styled) {
+        setSelectedImage(styled);
+        playSound('SUCCESS');
+      }
+    } finally {
+      setIsStylizing(false);
     }
   };
 
@@ -458,6 +555,46 @@ export default function App() {
                 {/* Weather Update */}
                 <WeatherWidget />
 
+                {/* March Calculator Form */}
+                <div className="bg-[#f4ebd0] border-4 border-[#3e342a] p-4 shadow-[6px_6px_0px_#3e342a] font-serif">
+                  <h3 className="text-sm font-black uppercase mb-3 flex items-center gap-2">
+                    <Navigation className="w-4 h-4" /> Kalkulátor přesunu (Rekrutace dat)
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div className="relative">
+                      <label className="block text-[10px] font-bold uppercase mb-1">Vzdálenost (km)</label>
+                      <input 
+                        type="number" 
+                        value={marchDistance}
+                        onChange={(e) => setMarchDistance(e.target.value)}
+                        className="w-full bg-white border-2 border-[#1a2f4c] px-2 py-1 text-sm font-black"
+                      />
+                      <button 
+                        onClick={handleUseMapDistance}
+                        className="absolute right-1 top-6 text-[#1a2f4c] hover:text-[#b8974a]"
+                        title="Použít délku trasy z mapy"
+                      >
+                        <MapIcon className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase mb-1">Čas (minuty)</label>
+                      <input 
+                        type="number" 
+                        value={marchMinutes}
+                        onChange={(e) => setMarchMinutes(e.target.value)}
+                        className="w-full bg-white border-2 border-[#1a2f4c] px-2 py-1 text-sm font-black"
+                      />
+                    </div>
+                  </div>
+                  <button 
+                    onClick={handleLogMarch}
+                    className="w-full bg-[#1a2f4c] text-[#f4ebd0] font-black uppercase text-xs py-2 shadow-[4px_4px_0px_#8b0000] active:shadow-none translate-y-0 active:translate-y-[4px] active:translate-x-[4px] transition-all"
+                  >
+                    Zapsat do pochodového deníku
+                  </button>
+                </div>
+
                 {/* Interactive Military Map */}
                 <div className="h-[45vh] sm:h-[450px] min-h-[300px] bg-[#d1d1b8] border-4 sm:border-[12px] border-[#3e342a] shadow-lg relative overflow-hidden shrink-0">
                    <MilitaryMap otherSoldiers={globalStats as any[]} />
@@ -538,10 +675,44 @@ export default function App() {
                         className="w-full max-w-sm overflow-hidden"
                       >
                         <div className="bg-white border-4 border-[#1a2f4c] p-4 shadow-[4px_4px_0px_#1a2f4c] mb-4">
+                          {selectedImage && (
+                            <div className="mb-4 relative group">
+                              <img src={selectedImage} alt="Draft" className="w-full h-48 object-cover border-2 border-[#1a2f4c]" />
+                              <button 
+                                onClick={() => setSelectedImage(null)}
+                                className="absolute top-2 right-2 bg-red-600 text-white p-1 rounded-full shadow-lg"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                              <div className="mt-2 flex justify-center">
+                                <motion.button
+                                  whileHover={{ scale: 1.05 }}
+                                  whileTap={{ scale: 0.95 }}
+                                  onClick={handleStylize}
+                                  disabled={isStylizing}
+                                  className={`flex items-center gap-2 px-4 py-2 rounded-sm font-black text-[10px] uppercase tracking-widest transition-all
+                                    ${isStylizing ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#1a2f4c] text-[#f4ebd0] hover:bg-[#b8974a]'}
+                                  `}
+                                >
+                                  {isStylizing ? (
+                                    <>
+                                      <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                      Historizace...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <History className="w-4 h-4" />
+                                      AI Historizace (1914 Style)
+                                    </>
+                                  )}
+                                </motion.button>
+                              </div>
+                            </div>
+                          )}
                           <textarea
                             value={inputText}
                             onChange={(e) => setInputText(e.target.value)}
-                            placeholder="Zde pište hlášení v písemné formě..."
+                            placeholder={selectedImage ? "Přidejte komentář k fotografii..." : "Zde pište hlášení v písemné formě..."}
                             className="w-full bg-transparent border-none focus:ring-0 font-serif italic text-sm min-h-[80px] resize-none"
                             autoFocus
                           />
@@ -587,7 +758,7 @@ export default function App() {
 
                 {/* Nature & Historical Context */}
                 <div className="px-2 sm:px-0">
-                  <NatureAnalysis />
+                  <NatureAnalysis messages={allMessages} />
                 </div>
               </motion.div>
             )}
@@ -739,16 +910,66 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-white border-2 border-[#1a2f4c] p-4 text-center shadow-[4px_4px_0px_#1a2f4c]">
+                  <div className="group relative bg-white border-2 border-[#1a2f4c] p-4 text-center shadow-[4px_4px_0px_#1a2f4c] cursor-help">
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      whileHover={{ opacity: 1, y: 0, scale: 1 }}
+                      className="absolute bottom-full left-0 right-0 mb-2 bg-[#1a2f4c] text-[#f4ebd0] p-3 text-[10px] font-black uppercase tracking-tight shadow-xl z-50 pointer-events-none border-b-4 border-[#b8974a]"
+                    >
+                      <div className="mb-2 border-b border-white/20 pb-1">Analýza obsahu krve</div>
+                      <p className="italic font-serif normal-case opacity-80 leading-tight">
+                        {stats.alcohol > 0.5 
+                          ? "Při této hladině se i polní kuchyně zdá být pětihvězdičkovým hotelem v Mariánských Lázních." 
+                          : "0.5 ‰ a méně? To je stav vhodný leda tak pro biskupa, ne pro řádného maršála!"}
+                      </p>
+                      <div className="mt-2 text-[8px] text-[#b8974a]">● Celkem vypito: {stats.alcohol} promile</div>
+                    </motion.div>
                     <Beer className="w-8 h-8 mx-auto mb-2 text-[#b8974a]" />
                     <p className="text-[10px] font-black uppercase opacity-60">Lihoměr</p>
                     <p className="text-3xl font-black">{stats.alcohol} ‰</p>
                   </div>
-                  <div className="bg-white border-2 border-[#1a2f4c] p-4 text-center shadow-[4px_4px_0_#1a2f4c]">
+
+                  <div className="group relative bg-white border-2 border-[#1a2f4c] p-4 text-center shadow-[4px_4px_0_#1a2f4c] cursor-help">
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      whileHover={{ opacity: 1, y: 0, scale: 1 }}
+                      className="absolute bottom-full left-0 right-0 mb-2 bg-[#8b0000] text-[#f4ebd0] p-3 text-[10px] font-black uppercase tracking-tight shadow-xl z-50 pointer-events-none border-b-4 border-[#1a2f4c]"
+                    >
+                      <div className="mb-2 border-b border-white/20 pb-1">Energetická bilance</div>
+                      <p className="italic font-serif normal-case opacity-80 leading-tight">
+                        {stats.calories > 1500 
+                          ? "S touto energií byste mohl dotlačit kanón až do Budapešti bez zastávky na pivo." 
+                          : "Každých 500 kcal je jeden poctivý vídeňský řízek, který vám dodá sílu k dalšímu hlášení."}
+                      </p>
+                      <div className="mt-2 text-[8px] opacity-60">● Příjem z hlášení: {stats.calories} kcal</div>
+                    </motion.div>
                     <Flame className="w-8 h-8 mx-auto mb-2 text-[#8b0000]" />
                     <p className="text-[10px] font-black uppercase opacity-60">Energie</p>
                     <p className="text-3xl font-black">{stats.calories} kcal</p>
                   </div>
+                </div>
+
+                {/* Alcohol Logging */}
+                <div className="bg-[#fdfaf1] border-4 border-[#3e342a] p-4 shadow-[6px_6px_0px_#3e342a]">
+                   <h3 className="text-xs font-black uppercase mb-4 text-center border-b-2 border-black/10 pb-2">Hlášení o proviantu</h3>
+                   <div className="flex gap-4">
+                      <button 
+                        onClick={handleAddBeer}
+                        className="flex-1 bg-white border-2 border-[#b8974a] p-3 flex flex-col items-center gap-1 hover:bg-[#b8974a]/10 transition-colors"
+                      >
+                         <Beer className="w-6 h-6 text-[#b8974a]" />
+                         <span className="text-[10px] font-black uppercase">Dát si pivo</span>
+                         <span className="text-[8px] opacity-50">+0.3‰</span>
+                      </button>
+                      <button 
+                        onClick={handleAddRum}
+                        className="flex-1 bg-white border-2 border-[#1a2f4c] p-3 flex flex-col items-center gap-1 hover:bg-[#1a2f4c]/10 transition-colors"
+                      >
+                         <Wine className="w-6 h-6 text-[#1a2f4c]" />
+                         <span className="text-[10px] font-black uppercase">Dát si rum</span>
+                         <span className="text-[8px] opacity-50">+0.2‰</span>
+                      </button>
+                   </div>
                 </div>
 
                 <div className="bg-[#1a2f4c]/5 p-6 border-2 border-dashed border-[#1a2f4c]/20 text-center italic mb-4">

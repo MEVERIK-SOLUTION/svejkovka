@@ -306,7 +306,7 @@ function RoutePlanner({ origin, target }: { origin: google.maps.LatLngLiteral | 
 
 // --- Main Component ---
 
-const routePositions: google.maps.LatLngLiteral[] = [
+export const routePositions: google.maps.LatLngLiteral[] = [
   { lat: 49.3088, lng: 14.1475 }, 
   { lat: 49.2941, lng: 14.1264 }, 
   { lat: 49.2783, lng: 14.1206 }, 
@@ -435,15 +435,16 @@ export default function MilitaryMap({ otherSoldiers = [] }: { otherSoldiers?: an
     setMapCenter(putimPos);
   };
 
-  // Derive soldiers positions for visual effect (collaborative story)
-  // In a real app we'd fetch their actual lat/lng, here we'll offset them slightly from path points
-  const allies = otherSoldiers?.filter(s => s.userId !== auth.currentUser?.uid).map((s, i) => ({
-    ...s,
-    position: {
-      lat: routePositions[i % routePositions.length].lat + (Math.random() - 0.5) * 0.05,
-      lng: routePositions[i % routePositions.length].lng + (Math.random() - 0.5) * 0.05,
-    }
-  }));
+  // Derive soldiers positions with useMemo to prevent jumping markers on every render
+  const allies = React.useMemo(() => {
+    return otherSoldiers?.filter(s => s.userId !== auth.currentUser?.uid).map((s, i) => ({
+      ...s,
+      position: {
+        lat: routePositions[i % routePositions.length].lat + (Math.sin(i) * 0.02), // Deterministic offset
+        lng: routePositions[i % routePositions.length].lng + (Math.cos(i) * 0.02),
+      }
+    }));
+  }, [otherSoldiers]);
 
   if (!hasValidKey) {
     return (
